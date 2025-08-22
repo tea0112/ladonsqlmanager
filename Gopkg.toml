@@ -37,6 +37,10 @@
   name = "github.com/pkg/errors"
   version = "0.8.0"
 
+[[constraint]]
+  name = "gorm.io/gorm"
+  version = "1.25.5"
+
 [prune]
   go-tests = true
   unused-packages = true

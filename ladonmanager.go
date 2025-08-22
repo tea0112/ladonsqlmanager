@@ -1,6 +1,7 @@
 package ladonsqlmanager
 
 import (
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
@@ -10,6 +11,7 @@ import (
 	"github.com/ory/ladon"
 	"github.com/ory/ladon/compiler"
 	"github.com/pkg/errors"
+	"gorm.io/gorm"
 )
 
 var (
@@ -19,13 +21,13 @@ var (
 
 // SQLManager implements the ladon/Manager without requiring sqlx or migrations packages
 type SQLManager struct {
-	db         *sql.DB
+	db         *gorm.DB
 	driverName string
 	stmts      *Statements
 }
 
 // New creates a new, uninitialized SQLManager
-func New(db *sql.DB, driverName string) *SQLManager {
+func New(db *gorm.DB, driverName string) *SQLManager {
 	return &SQLManager{db: db, driverName: driverName}
 }
 
@@ -49,64 +51,27 @@ func (s *SQLManager) Init() error {
 }
 
 // Update updates a policy in the database by deleting original and re-creating
-func (s *SQLManager) Update(policy ladon.Policy) error {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return errors.WithStack(err)
-	}
-
-	if err := s.delete(policy.GetID(), tx); err != nil {
-		if rollErr := tx.Rollback(); rollErr != nil {
-			return errors.Wrap(err, rollErr.Error())
+func (s *SQLManager) Update(ctx context.Context, policy ladon.Policy) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := s.delete(policy.GetID(), tx); err != nil {
+			return err
 		}
-		return errors.WithStack(err)
-	}
-
-	if err := s.create(policy, tx); err != nil {
-		if rollErr := tx.Rollback(); rollErr != nil {
-			return errors.Wrap(err, rollErr.Error())
-		}
-		return errors.WithStack(err)
-	}
-
-	if err = tx.Commit(); err != nil {
-		if rollErr := tx.Rollback(); rollErr != nil {
-			return errors.Wrap(err, rollErr.Error())
-		}
-		return errors.WithStack(err)
-	}
-
-	return nil
+		return s.create(policy, tx)
+	})
 }
 
 // Create inserts a new policy
-func (s *SQLManager) Create(policy ladon.Policy) (err error) {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return errors.WithStack(err)
-	}
-
-	if err := s.create(policy, tx); err != nil {
-		if rollErr := tx.Rollback(); rollErr != nil {
-			return errors.Wrap(err, rollErr.Error())
-		}
-		return errors.WithStack(err)
-	}
-
-	if err = tx.Commit(); err != nil {
-		if rollErr := tx.Rollback(); rollErr != nil {
-			return errors.Wrap(err, rollErr.Error())
-		}
-		return errors.WithStack(err)
-	}
-
-	return nil
+func (s *SQLManager) Create(ctx context.Context, policy ladon.Policy) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		return s.create(policy, tx)
+	})
 }
 
-func (s *SQLManager) create(policy ladon.Policy, tx *sql.Tx) (err error) {
+func (s *SQLManager) create(policy ladon.Policy, tx *gorm.DB) error {
 	conditions := []byte("{}")
 	if policy.GetConditions() != nil {
 		cs := policy.GetConditions()
+		var err error
 		conditions, err = json.Marshal(&cs)
 		if err != nil {
 			return errors.WithStack(err)
@@ -118,7 +83,16 @@ func (s *SQLManager) create(policy ladon.Policy, tx *sql.Tx) (err error) {
 		meta = policy.GetMeta()
 	}
 
-	if _, err = tx.Exec(s.stmts.QueryInsertPolicy, policy.GetID(), policy.GetDescription(), policy.GetEffect(), conditions, meta); err != nil {
+	// Insert policy using GORM
+	policyData := map[string]interface{}{
+		"id":          policy.GetID(),
+		"description": policy.GetDescription(),
+		"effect":      policy.GetEffect(),
+		"conditions":  conditions,
+		"meta":        meta,
+	}
+
+	if err := tx.Table("ladon_policy").Create(policyData).Error; err != nil {
 		return errors.WithStack(err)
 	}
 
@@ -158,11 +132,29 @@ func (s *SQLManager) create(policy ladon.Policy, tx *sql.Tx) (err error) {
 				return errors.WithStack(err)
 			}
 
-			if _, err := tx.Exec(query, id, template, compiled.String(), strings.Index(template, string(policy.GetStartDelimiter())) >= -1); err != nil {
-				return errors.WithStack(err)
-			}
-			if _, err := tx.Exec(queryRel, policy.GetID(), id); err != nil {
-				return errors.WithStack(err)
+			// Use GORM for insertions
+			switch rel.t {
+			case "action":
+				if err := tx.Exec(query, id, template, compiled.String(), strings.Index(template, string(policy.GetStartDelimiter())) >= -1).Error; err != nil {
+					return errors.WithStack(err)
+				}
+				if err := tx.Exec(queryRel, policy.GetID(), id).Error; err != nil {
+					return errors.WithStack(err)
+				}
+			case "resource":
+				if err := tx.Exec(query, id, template, compiled.String(), strings.Index(template, string(policy.GetStartDelimiter())) >= -1).Error; err != nil {
+					return errors.WithStack(err)
+				}
+				if err := tx.Exec(queryRel, policy.GetID(), id).Error; err != nil {
+					return errors.WithStack(err)
+				}
+			case "subject":
+				if err := tx.Exec(query, id, template, compiled.String(), strings.Index(template, string(policy.GetStartDelimiter())) >= -1).Error; err != nil {
+					return errors.WithStack(err)
+				}
+				if err := tx.Exec(queryRel, policy.GetID(), id).Error; err != nil {
+					return errors.WithStack(err)
+				}
 			}
 		}
 	}
@@ -171,11 +163,12 @@ func (s *SQLManager) create(policy ladon.Policy, tx *sql.Tx) (err error) {
 }
 
 // FindRequestCandidates returns policies that potentially match a ladon.Request
-func (s *SQLManager) FindRequestCandidates(r *ladon.Request) (ladon.Policies, error) {
-	rows, err := s.db.Query(s.stmts.QueryRequestCandidates, r.Subject, r.Subject)
-	if err == sql.ErrNoRows {
-		return nil, ladon.NewErrResourceNotFound(err)
-	} else if err != nil {
+func (s *SQLManager) FindRequestCandidates(ctx context.Context, r *ladon.Request) (ladon.Policies, error) {
+	rows, err := s.db.WithContext(ctx).Raw(s.stmts.QueryRequestCandidates, r.Subject, r.Subject).Rows()
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, ladon.NewErrResourceNotFound(err)
+		}
 		return nil, errors.WithStack(err)
 	}
 	defer rows.Close()
@@ -194,7 +187,7 @@ func scanRows(rows *sql.Rows) (ladon.Policies, error) {
 		p.Subjects = []string{}
 		p.Resources = []string{}
 
-		if err := rows.Scan(&p.ID, &p.Effect, &conditions, &p.Description, &p.Meta, &subject, &resource, &action); err == sql.ErrNoRows {
+		if err := rows.Scan(&p.ID, &p.Effect, &conditions, &p.Description, &p.Meta, &subject, &resource, &action); err == gorm.ErrRecordNotFound {
 			return nil, ladon.NewErrResourceNotFound(err)
 		} else if err != nil {
 			return nil, errors.WithStack(err)
@@ -248,8 +241,8 @@ func scanRows(rows *sql.Rows) (ladon.Policies, error) {
 }
 
 // GetAll returns all policies
-func (s *SQLManager) GetAll(limit, offset int64) (ladon.Policies, error) {
-	rows, err := s.db.Query(s.stmts.GetAllQuery, limit, offset)
+func (s *SQLManager) GetAll(ctx context.Context, limit, offset int64) (ladon.Policies, error) {
+	rows, err := s.db.WithContext(ctx).Raw(s.stmts.GetAllQuery, limit, offset).Rows()
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
@@ -259,53 +252,65 @@ func (s *SQLManager) GetAll(limit, offset int64) (ladon.Policies, error) {
 }
 
 // Get retrieves a policy.
-func (s *SQLManager) Get(id string) (ladon.Policy, error) {
-	rows, err := s.db.Query(s.stmts.GetQuery, id)
-	if err == sql.ErrNoRows {
-		return nil, ladon.NewErrResourceNotFound(err)
-	} else if err != nil {
+func (s *SQLManager) Get(ctx context.Context, id string) (ladon.Policy, error) {
+	rows, err := s.db.WithContext(ctx).Raw(s.stmts.GetQuery, id).Rows()
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, ladon.NewErrResourceNotFound(err)
+		}
 		return nil, errors.WithStack(err)
 	}
 	defer rows.Close()
 
 	policies, err := scanRows(rows)
 	if err != nil {
-		return nil, errors.WithStack(err)
+		return nil, err
 	} else if len(policies) == 0 {
-		return nil, ladon.NewErrResourceNotFound(sql.ErrNoRows)
+		return nil, ladon.NewErrResourceNotFound(gorm.ErrRecordNotFound)
 	}
 
 	return policies[0], nil
 }
 
 // Delete removes a policy.
-func (s *SQLManager) Delete(id string) error {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return errors.WithStack(err)
-	}
-
-	if err := s.delete(id, tx); err != nil {
-		if rollErr := tx.Rollback(); rollErr != nil {
-			return errors.Wrap(err, rollErr.Error())
-		}
-		return errors.WithStack(err)
-	}
-
-	if err = tx.Commit(); err != nil {
-		if rollErr := tx.Rollback(); rollErr != nil {
-			return errors.Wrap(err, rollErr.Error())
-		}
-		return errors.WithStack(err)
-	}
-
-	return nil
+func (s *SQLManager) Delete(ctx context.Context, id string) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		return s.delete(id, tx)
+	})
 }
 
 // Delete removes a policy.
-func (s *SQLManager) delete(id string, tx *sql.Tx) error {
-	_, err := tx.Exec(s.stmts.DeletePolicy, id)
-	return errors.WithStack(err)
+func (s *SQLManager) delete(id string, tx *gorm.DB) error {
+	if err := tx.Exec(s.stmts.DeletePolicy, id).Error; err != nil {
+		return errors.WithStack(err)
+	}
+	return nil
+}
+
+// FindPoliciesForSubject returns policies that could match the subject.
+func (s *SQLManager) FindPoliciesForSubject(ctx context.Context, subject string) (ladon.Policies, error) {
+	rows, err := s.db.WithContext(ctx).Raw(s.stmts.QueryRequestCandidates, subject, subject).Rows()
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, ladon.NewErrResourceNotFound(err)
+		}
+		return nil, errors.WithStack(err)
+	}
+	defer rows.Close()
+
+	return scanRows(rows)
+}
+
+// FindPoliciesForResource returns policies that could match the resource.
+func (s *SQLManager) FindPoliciesForResource(ctx context.Context, resource string) (ladon.Policies, error) {
+	rows, err := s.db.WithContext(ctx).Raw(s.stmts.QueryRequestCandidates, resource, resource).Rows()
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, ladon.NewErrResourceNotFound(err)
+		}
+		return nil, errors.WithStack(err)
+	}
+	return scanRows(rows)
 }
 
 func uniq(input []string) []string {
