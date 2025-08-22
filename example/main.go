@@ -1,13 +1,14 @@
 package main
 
 import (
-	"database/sql"
+	"context"
 	"log"
 	"os"
 
-	stdlib "github.com/jackc/pgx/stdlib"
+	"github.com/ladonsqlmanager"
 	"github.com/ory/ladon"
-	"github.com/wirepair/ladonsqlmanager"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
 )
 
 func main() {
@@ -15,10 +16,8 @@ func main() {
 	if dbstring == "" {
 		log.Fatalf("DB_STRING not set")
 	}
-	driverConfig := stdlib.DriverConfig{}
-	stdlib.RegisterDriverConfig(&driverConfig)
 
-	db, err := sql.Open("pgx", dbstring)
+	db, err := gorm.Open(postgres.Open(dbstring), &gorm.Config{})
 	if err != nil {
 		log.Fatalf("error connecting to db: %s\n", err)
 	}
@@ -41,7 +40,8 @@ func main() {
 		Manager: manager,
 	}
 
-	if err := warden.Manager.Create(policy); err != nil {
+	ctx := context.Background()
+	if err := warden.Manager.Create(ctx, policy); err != nil {
 		log.Fatalf("failed to create policy: %s\n", err)
 	}
 	r := &ladon.Request{
@@ -50,7 +50,7 @@ func main() {
 		Action:   "create",
 	}
 
-	pols, err := warden.Manager.FindRequestCandidates(r)
+	pols, err := warden.Manager.FindRequestCandidates(ctx, r)
 	if err != nil {
 		log.Fatalf("error getting policies: %s\n", err)
 	}
@@ -59,10 +59,9 @@ func main() {
 		log.Printf("%#v\n", pol)
 	}
 
-	err = warden.IsAllowed(r)
+	err = warden.IsAllowed(ctx, r)
 
 	if err != nil {
 		log.Fatalf("error should be allowed: %s\n", err)
 	}
-
 }
