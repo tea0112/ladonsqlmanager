@@ -8,11 +8,24 @@ set -e
 echo "🎮 Welcome to Ladon Policy Playground!"
 echo "====================================="
 
+# Check if config.env exists and load it
+if [ -f "config.env" ]; then
+    echo "📁 Found config.env, loading configuration..."
+    export $(cat config.env | grep -v '^#' | xargs)
+    echo "✅ Configuration loaded from config.env"
+else
+    echo "⚠️  No config.env found, checking for DB_STRING environment variable..."
+fi
+
 # Check if DB_STRING is set
 if [ -z "$DB_STRING" ]; then
     echo "❌ Error: DB_STRING environment variable not set"
-    echo "Please set it first:"
-    echo "  export DB_STRING=\"host=localhost user=root password='Root\!23456' dbname=tea sslmode=disable\""
+    echo "Please either:"
+    echo "  1. Create a config.env file with your database configuration, or"
+    echo "  2. Set the DB_STRING environment variable"
+    echo ""
+    echo "Example config.env:"
+    echo "  DB_STRING=postgres://ladon_user:ladon_password@localhost:5432/ladon_db?sslmode=disable"
     exit 1
 fi
 
@@ -25,15 +38,15 @@ build_tools() {
     
     # Build CLI tool
     echo "Building policy CLI..."
-    cd playground/cli
-    go build -o policy_cli .
-    cd ../..
+    cd playground
+    go build -o policy_cli policy_cli.go
+    cd ..
     
     # Build quick test tool
     echo "Building quick test tool..."
-    cd playground/quick_test
-    go build -o quick_test .
-    cd ../..
+    cd playground
+    go build -o quick_test quick_test_main.go
+    cd ..
     
     echo "✅ Tools built successfully!"
     echo ""
@@ -47,6 +60,7 @@ show_menu() {
     echo "3. Build All Tools"
     echo "4. Show Database Status"
     echo "5. Run Sample Policies"
+    echo "6. Run Database Migrations"
     echo "0. Exit"
     echo ""
 }
@@ -54,9 +68,13 @@ show_menu() {
 # Function to run sample policies
 run_sample_policies() {
     echo "🎯 Running sample policies..."
-    cd playground/cli
+    cd playground
+    if [ ! -f "policy_cli" ]; then
+        echo "Policy CLI not built. Building first..."
+        go build -o policy_cli policy_cli.go
+    fi
     echo "4" | ./policy_cli
-    cd ../..
+    cd ..
     echo ""
 }
 
@@ -65,15 +83,25 @@ check_db_status() {
     echo "🔍 Checking database status..."
     
     # Extract database info from DB_STRING
-    if [[ $DB_STRING == *"dbname=tea"* ]]; then
-        echo "Database: tea"
+    if [[ $DB_STRING == *"dbname=ladon_db"* ]]; then
+        echo "Database: ladon_db"
     fi
     
-    if [[ $DB_STRING == *"user=root"* ]]; then
-        echo "User: root"
+    if [[ $DB_STRING == *"user=ladon_user"* ]]; then
+        echo "User: ladon_user"
     fi
     
     echo "Connection: $DB_STRING"
+    echo ""
+}
+
+# Function to run migrations
+run_migrations() {
+    echo "🗄️  Running database migrations..."
+    cd ..
+    go run cmd/migrate/main.go -action=migrate
+    cd playground
+    echo "✅ Migrations completed!"
     echo ""
 }
 
@@ -85,23 +113,23 @@ while true; do
     case $choice in
         1)
             echo "🚀 Starting Interactive Policy CLI..."
-            if [ ! -f "playground/cli/policy_cli" ]; then
+            cd playground
+            if [ ! -f "policy_cli" ]; then
                 echo "Tool not built. Building first..."
-                build_tools
+                go build -o policy_cli policy_cli.go
             fi
-            cd playground/cli
             ./policy_cli
-            cd ../..
+            cd ..
             ;;
         2)
             echo "🧪 Running Quick Test Scenarios..."
-            if [ ! -f "playground/quick_test/quick_test" ]; then
+            cd playground
+            if [ ! -f "quick_test" ]; then
                 echo "Tool not built. Building first..."
-                build_tools
+                go build -o quick_test quick_test_main.go
             fi
-            cd playground/quick_test
             ./quick_test
-            cd ../..
+            cd ..
             ;;
         3)
             build_tools
@@ -111,6 +139,9 @@ while true; do
             ;;
         5)
             run_sample_policies
+            ;;
+        6)
+            run_migrations
             ;;
         0)
             echo "👋 Goodbye! Happy policy testing!"

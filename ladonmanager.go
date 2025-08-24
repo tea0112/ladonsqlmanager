@@ -3,7 +3,6 @@ package ladonsqlmanager
 import (
 	"context"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -12,6 +11,9 @@ import (
 	"github.com/ory/ladon/compiler"
 	"github.com/pkg/errors"
 	"gorm.io/gorm"
+
+	"github.com/ladonsqlmanager/migrations"
+	"github.com/ladonsqlmanager/models"
 )
 
 var (
@@ -23,7 +25,6 @@ var (
 type SQLManager struct {
 	db         *gorm.DB
 	driverName string
-	stmts      *Statements
 }
 
 // New creates a new, uninitialized SQLManager
@@ -31,23 +32,10 @@ func New(db *gorm.DB, driverName string) *SQLManager {
 	return &SQLManager{db: db, driverName: driverName}
 }
 
-// SetStatements allows callers to just provide their own statements if they
-// want to support something other than postgres/mysql
-// Note you must call this before Init() if you wish to override the driver specific
-// statements.
-func (s *SQLManager) SetStatements(statements *Statements) {
-	s.stmts = statements
-}
-
-// Init ensures statements are properly mapped
+// Init ensures the database is properly initialized with GORM models
 func (s *SQLManager) Init() error {
-	if s.stmts == nil {
-		s.stmts = GetStatements(s.driverName)
-		if s.stmts == nil {
-			return ErrInvalidDriver
-		}
-	}
-	return nil
+	// Use the migration package to set up the database
+	return migrations.Migrate(s.db)
 }
 
 // Update updates a policy in the database by deleting original and re-creating
@@ -83,193 +71,198 @@ func (s *SQLManager) create(policy ladon.Policy, tx *gorm.DB) error {
 		meta = policy.GetMeta()
 	}
 
-	// Insert policy using GORM
-	policyData := map[string]interface{}{
-		"id":          policy.GetID(),
-		"description": policy.GetDescription(),
-		"effect":      policy.GetEffect(),
-		"conditions":  conditions,
-		"meta":        meta,
+	// Create policy using GORM
+	policyModel := &models.Policy{
+		ID:          policy.GetID(),
+		Description: policy.GetDescription(),
+		Effect:      policy.GetEffect(),
+		Conditions:  conditions,
+		Meta:        meta,
 	}
 
-	if err := tx.Table("ladon_policy").Create(policyData).Error; err != nil {
+	if err := tx.Create(policyModel).Error; err != nil {
 		return errors.WithStack(err)
 	}
 
-	type relation struct {
-		p []string
-		t string
-	}
-	var relations = []relation{
-		{p: policy.GetActions(), t: "action"},
-		{p: policy.GetResources(), t: "resource"},
-		{p: policy.GetSubjects(), t: "subject"},
+	// Process subjects, actions, and resources
+	if err := s.processPolicyRelations(policy, tx); err != nil {
+		return errors.WithStack(err)
 	}
 
-	for _, rel := range relations {
-		var query string
-		var queryRel string
+	return nil
+}
 
-		switch rel.t {
-		case "action":
-			query = s.stmts.QueryInsertPolicyActions
-			queryRel = s.stmts.QueryInsertPolicyActionsRel
-		case "resource":
-			query = s.stmts.QueryInsertPolicyResources
-			queryRel = s.stmts.QueryInsertPolicyResourcesRel
-		case "subject":
-			query = s.stmts.QueryInsertPolicySubjects
-			queryRel = s.stmts.QueryInsertPolicySubjectsRel
+func (s *SQLManager) processPolicyRelations(policy ladon.Policy, tx *gorm.DB) error {
+	// Process subjects
+	if err := s.processPolicyItems(policy.GetSubjects(), "subject", policy.GetID(), policy.GetStartDelimiter(), policy.GetEndDelimiter(), tx); err != nil {
+		return err
+	}
+
+	// Process actions
+	if err := s.processPolicyItems(policy.GetActions(), "action", policy.GetID(), policy.GetStartDelimiter(), policy.GetEndDelimiter(), tx); err != nil {
+		return err
+	}
+
+	// Process resources
+	if err := s.processPolicyItems(policy.GetResources(), "resource", policy.GetID(), policy.GetStartDelimiter(), policy.GetEndDelimiter(), tx); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (s *SQLManager) processPolicyItems(items []string, itemType string, policyID string, startDelim, endDelim byte, tx *gorm.DB) error {
+	for _, template := range items {
+		h := sha256.New()
+		h.Write([]byte(template))
+		id := fmt.Sprintf("%x", h.Sum(nil))
+
+		compiled, err := compiler.CompileRegex(template, startDelim, endDelim)
+		if err != nil {
+			return errors.WithStack(err)
 		}
 
-		for _, template := range rel.p {
-			h := sha256.New()
-			h.Write([]byte(template))
-			id := fmt.Sprintf("%x", h.Sum(nil))
+		hasRegex := strings.Index(template, string(startDelim)) >= 0
 
-			compiled, err := compiler.CompileRegex(template, policy.GetStartDelimiter(), policy.GetEndDelimiter())
-			if err != nil {
-				return errors.WithStack(err)
+		// Create or update the item
+		var item interface{}
+		switch itemType {
+		case "subject":
+			item = &models.Subject{
+				ID:       id,
+				Template: template,
+				Compiled: compiled.String(),
+				HasRegex: hasRegex,
 			}
+		case "action":
+			item = &models.Action{
+				ID:       id,
+				Template: template,
+				Compiled: compiled.String(),
+				HasRegex: hasRegex,
+			}
+		case "resource":
+			item = &models.Resource{
+				ID:       id,
+				Template: template,
+				Compiled: compiled.String(),
+				HasRegex: hasRegex,
+			}
+		}
 
-			// Use GORM for insertions
-			switch rel.t {
-			case "action":
-				if err := tx.Exec(query, id, template, compiled.String(), strings.Index(template, string(policy.GetStartDelimiter())) >= -1).Error; err != nil {
-					return errors.WithStack(err)
-				}
-				if err := tx.Exec(queryRel, policy.GetID(), id).Error; err != nil {
-					return errors.WithStack(err)
-				}
-			case "resource":
-				if err := tx.Exec(query, id, template, compiled.String(), strings.Index(template, string(policy.GetStartDelimiter())) >= -1).Error; err != nil {
-					return errors.WithStack(err)
-				}
-				if err := tx.Exec(queryRel, policy.GetID(), id).Error; err != nil {
-					return errors.WithStack(err)
-				}
-			case "subject":
-				if err := tx.Exec(query, id, template, compiled.String(), strings.Index(template, string(policy.GetStartDelimiter())) >= -1).Error; err != nil {
-					return errors.WithStack(err)
-				}
-				if err := tx.Exec(queryRel, policy.GetID(), id).Error; err != nil {
-					return errors.WithStack(err)
-				}
-			}
+		// Use GORM's FirstOrCreate to avoid duplicates
+		if err := tx.Where("id = ?", id).FirstOrCreate(item).Error; err != nil {
+			return errors.WithStack(err)
+		}
+
+		// Create the relationship
+		if err := s.createPolicyRelation(policyID, id, itemType, tx); err != nil {
+			return errors.WithStack(err)
 		}
 	}
 
 	return nil
 }
 
+func (s *SQLManager) createPolicyRelation(policyID, itemID, itemType string, tx *gorm.DB) error {
+	switch itemType {
+	case "subject":
+		rel := &models.PolicySubjectRel{
+			Policy:  policyID,
+			Subject: itemID,
+		}
+		return tx.Where("policy = ? AND subject = ?", policyID, itemID).FirstOrCreate(rel).Error
+	case "action":
+		rel := &models.PolicyActionRel{
+			Policy: policyID,
+			Action: itemID,
+		}
+		return tx.Where("policy = ? AND action = ?", policyID, itemID).FirstOrCreate(rel).Error
+	case "resource":
+		rel := &models.PolicyResourceRel{
+			Policy:   policyID,
+			Resource: itemID,
+		}
+		return tx.Where("policy = ? AND resource = ?", policyID, itemID).FirstOrCreate(rel).Error
+	}
+	return nil
+}
+
 // FindRequestCandidates returns policies that potentially match a ladon.Request
 func (s *SQLManager) FindRequestCandidates(ctx context.Context, r *ladon.Request) (ladon.Policies, error) {
-	rows, err := s.db.WithContext(ctx).Raw(s.stmts.QueryRequestCandidates, r.Subject, r.Subject).Rows()
+	var policies []models.Policy
+
+	// Use GORM to find policies with matching subjects
+	query := s.db.WithContext(ctx).
+		Preload("Subjects").
+		Preload("Actions").
+		Preload("Resources").
+		Joins("JOIN ladon_policy_subject_rel psr ON psr.policy = ladon_policy.id").
+		Joins("JOIN ladon_subject s ON s.id = psr.subject")
+
+	// Database-specific regex handling
+	switch s.driverName {
+	case "postgres", "pg", "pgx":
+		query = query.Where("(s.has_regex = ? AND ? ~ s.compiled) OR (s.has_regex = ? AND s.template = ?)",
+			true, r.Subject, false, r.Subject)
+	case "mysql":
+		query = query.Where("(s.has_regex = ? AND ? REGEXP BINARY s.compiled) OR (s.has_regex = ? AND s.template = ?)",
+			true, r.Subject, false, r.Subject)
+	default:
+		return nil, ErrInvalidDriver
+	}
+
+	err := query.Find(&policies).Error
+
 	if err != nil {
 		if err == gorm.ErrRecordNotFound {
 			return nil, ladon.NewErrResourceNotFound(err)
 		}
 		return nil, errors.WithStack(err)
 	}
-	defer rows.Close()
 
-	return scanRows(rows)
-}
-
-func scanRows(rows *sql.Rows) (ladon.Policies, error) {
-	var policies = map[string]*ladon.DefaultPolicy{}
-
-	for rows.Next() {
-		var p ladon.DefaultPolicy
-		var conditions []byte
-		var resource, subject, action sql.NullString
-		p.Actions = []string{}
-		p.Subjects = []string{}
-		p.Resources = []string{}
-
-		if err := rows.Scan(&p.ID, &p.Effect, &conditions, &p.Description, &p.Meta, &subject, &resource, &action); err == gorm.ErrRecordNotFound {
-			return nil, ladon.NewErrResourceNotFound(err)
-		} else if err != nil {
-			return nil, errors.WithStack(err)
-		}
-
-		p.Conditions = ladon.Conditions{}
-		if err := json.Unmarshal(conditions, &p.Conditions); err != nil {
-			return nil, errors.WithStack(err)
-		}
-
-		if c, ok := policies[p.ID]; ok {
-			if action.Valid {
-				policies[p.ID].Actions = append(c.Actions, action.String)
-			}
-
-			if subject.Valid {
-				policies[p.ID].Subjects = append(c.Subjects, subject.String)
-			}
-
-			if resource.Valid {
-				policies[p.ID].Resources = append(c.Resources, resource.String)
-			}
-		} else {
-			if action.Valid {
-				p.Actions = []string{action.String}
-			}
-
-			if subject.Valid {
-				p.Subjects = []string{subject.String}
-			}
-
-			if resource.Valid {
-				p.Resources = []string{resource.String}
-			}
-
-			policies[p.ID] = &p
-		}
-	}
-
-	var result = make(ladon.Policies, len(policies))
-	var count int
-	for _, v := range policies {
-		v.Actions = uniq(v.Actions)
-		v.Resources = uniq(v.Resources)
-		v.Subjects = uniq(v.Subjects)
-		result[count] = v
-		count++
-	}
-
-	return result, nil
+	return s.convertPoliciesToLadon(policies), nil
 }
 
 // GetAll returns all policies
 func (s *SQLManager) GetAll(ctx context.Context, limit, offset int64) (ladon.Policies, error) {
-	rows, err := s.db.WithContext(ctx).Raw(s.stmts.GetAllQuery, limit, offset).Rows()
+	var policies []models.Policy
+
+	err := s.db.WithContext(ctx).
+		Preload("Subjects").
+		Preload("Actions").
+		Preload("Resources").
+		Limit(int(limit)).
+		Offset(int(offset)).
+		Order("id").
+		Find(&policies).Error
+
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
-	defer rows.Close()
 
-	return scanRows(rows)
+	return s.convertPoliciesToLadon(policies), nil
 }
 
 // Get retrieves a policy.
 func (s *SQLManager) Get(ctx context.Context, id string) (ladon.Policy, error) {
-	rows, err := s.db.WithContext(ctx).Raw(s.stmts.GetQuery, id).Rows()
+	var policy models.Policy
+
+	err := s.db.WithContext(ctx).
+		Preload("Subjects").
+		Preload("Actions").
+		Preload("Resources").
+		Where("id = ?", id).
+		First(&policy).Error
+
 	if err != nil {
 		if err == gorm.ErrRecordNotFound {
 			return nil, ladon.NewErrResourceNotFound(err)
 		}
 		return nil, errors.WithStack(err)
 	}
-	defer rows.Close()
 
-	policies, err := scanRows(rows)
-	if err != nil {
-		return nil, err
-	} else if len(policies) == 0 {
-		return nil, ladon.NewErrResourceNotFound(gorm.ErrRecordNotFound)
-	}
-
-	return policies[0], nil
+	return s.convertPolicyToLadon(policy), nil
 }
 
 // Delete removes a policy.
@@ -281,36 +274,119 @@ func (s *SQLManager) Delete(ctx context.Context, id string) error {
 
 // Delete removes a policy.
 func (s *SQLManager) delete(id string, tx *gorm.DB) error {
-	if err := tx.Exec(s.stmts.DeletePolicy, id).Error; err != nil {
-		return errors.WithStack(err)
-	}
-	return nil
+	// GORM will handle cascade deletes due to foreign key constraints
+	return tx.Delete(&models.Policy{}, "id = ?", id).Error
 }
 
 // FindPoliciesForSubject returns policies that could match the subject.
 func (s *SQLManager) FindPoliciesForSubject(ctx context.Context, subject string) (ladon.Policies, error) {
-	rows, err := s.db.WithContext(ctx).Raw(s.stmts.QueryRequestCandidates, subject, subject).Rows()
+	var policies []models.Policy
+
+	query := s.db.WithContext(ctx).
+		Preload("Subjects").
+		Preload("Actions").
+		Preload("Resources").
+		Joins("JOIN ladon_policy_subject_rel psr ON psr.policy = ladon_policy.id").
+		Joins("JOIN ladon_subject s ON s.id = psr.subject")
+
+	// Database-specific regex handling
+	switch s.driverName {
+	case "postgres", "pg", "pgx":
+		query = query.Where("(s.has_regex = ? AND ? ~ s.compiled) OR (s.has_regex = ? AND s.template = ?)",
+			true, subject, false, subject)
+	case "mysql":
+		query = query.Where("(s.has_regex = ? AND ? REGEXP BINARY s.compiled) OR (s.has_regex = ? AND s.template = ?)",
+			true, subject, false, subject)
+	default:
+		return nil, ErrInvalidDriver
+	}
+
+	err := query.Find(&policies).Error
+
 	if err != nil {
 		if err == gorm.ErrRecordNotFound {
 			return nil, ladon.NewErrResourceNotFound(err)
 		}
 		return nil, errors.WithStack(err)
 	}
-	defer rows.Close()
 
-	return scanRows(rows)
+	return s.convertPoliciesToLadon(policies), nil
 }
 
 // FindPoliciesForResource returns policies that could match the resource.
 func (s *SQLManager) FindPoliciesForResource(ctx context.Context, resource string) (ladon.Policies, error) {
-	rows, err := s.db.WithContext(ctx).Raw(s.stmts.QueryRequestCandidates, resource, resource).Rows()
+	var policies []models.Policy
+
+	query := s.db.WithContext(ctx).
+		Preload("Subjects").
+		Preload("Actions").
+		Preload("Resources").
+		Joins("JOIN ladon_policy_resource_rel prr ON prr.policy = ladon_policy.id").
+		Joins("JOIN ladon_resource r ON r.id = prr.resource")
+
+	// Database-specific regex handling
+	switch s.driverName {
+	case "postgres", "pg", "pgx":
+		query = query.Where("(r.has_regex = ? AND ? ~ r.compiled) OR (r.has_regex = ? AND r.template = ?)",
+			true, resource, false, resource)
+	case "mysql":
+		query = query.Where("(r.has_regex = ? AND ? REGEXP BINARY r.compiled) OR (r.has_regex = ? AND r.template = ?)",
+			true, resource, false, resource)
+	default:
+		return nil, ErrInvalidDriver
+	}
+
+	err := query.Find(&policies).Error
+
 	if err != nil {
 		if err == gorm.ErrRecordNotFound {
 			return nil, ladon.NewErrResourceNotFound(err)
 		}
 		return nil, errors.WithStack(err)
 	}
-	return scanRows(rows)
+
+	return s.convertPoliciesToLadon(policies), nil
+}
+
+// Helper functions to convert between GORM models and Ladon interfaces
+func (s *SQLManager) convertPolicyToLadon(policy models.Policy) ladon.Policy {
+	ladonPolicy := &ladon.DefaultPolicy{
+		ID:          policy.ID,
+		Description: policy.Description,
+		Effect:      policy.Effect,
+		Conditions:  ladon.Conditions{},
+		Meta:        policy.Meta,
+	}
+
+	// Convert subjects
+	for _, subject := range policy.Subjects {
+		ladonPolicy.Subjects = append(ladonPolicy.Subjects, subject.Template)
+	}
+
+	// Convert actions
+	for _, action := range policy.Actions {
+		ladonPolicy.Actions = append(ladonPolicy.Actions, action.Template)
+	}
+
+	// Convert resources
+	for _, resource := range policy.Resources {
+		ladonPolicy.Resources = append(ladonPolicy.Resources, resource.Template)
+	}
+
+	// Parse conditions
+	if len(policy.Conditions) > 0 {
+		json.Unmarshal(policy.Conditions, &ladonPolicy.Conditions)
+	}
+
+	return ladonPolicy
+}
+
+func (s *SQLManager) convertPoliciesToLadon(policies []models.Policy) ladon.Policies {
+	result := make(ladon.Policies, len(policies))
+	for i, policy := range policies {
+		result[i] = s.convertPolicyToLadon(policy)
+	}
+	return result
 }
 
 func uniq(input []string) []string {
