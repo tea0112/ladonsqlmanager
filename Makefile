@@ -78,7 +78,9 @@ dev: up ## Start development environment
 test-app: ## Test the application with the database
 	@echo "🧪 Testing application..."
 	@echo "Make sure to set DB_STRING=postgres://ladon_user:ladon_password@localhost:5432/ladon_db?sslmode=disable"
-	cd example && go run main.go
+	# cd example && go run main.go
+	env DB_STRING='postgres://ladon_user:ladon_password@localhost:5432/ladon_db?sslmode=disable' go run ./example/main.go
+stat main.go: no such file or directory
 
 # Utility commands
 health: ## Check health of all services

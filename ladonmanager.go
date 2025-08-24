@@ -7,13 +7,13 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/ladonsqlmanager/models"
 	"github.com/ory/ladon"
 	"github.com/ory/ladon/compiler"
 	"github.com/pkg/errors"
 	"gorm.io/gorm"
 
 	"github.com/ladonsqlmanager/migrations"
-	"github.com/ladonsqlmanager/models"
 )
 
 var (
@@ -355,7 +355,7 @@ func (s *SQLManager) convertPolicyToLadon(policy models.Policy) ladon.Policy {
 		Description: policy.Description,
 		Effect:      policy.Effect,
 		Conditions:  ladon.Conditions{},
-		Meta:        policy.Meta,
+		Meta:        []byte(policy.Meta),
 	}
 
 	// Convert subjects
