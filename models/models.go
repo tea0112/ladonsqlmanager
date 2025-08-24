@@ -1,22 +1,70 @@
 package models
 
 import (
+	"database/sql/driver"
 	"encoding/json"
+	"errors"
 	"time"
 
 	"gorm.io/gorm"
 )
 
+// JSONText is a custom type that can handle JSON stored as text in the database
+type JSONText json.RawMessage
+
+// Value implements the driver.Valuer interface
+func (j JSONText) Value() (driver.Value, error) {
+	if j == nil {
+		return nil, nil
+	}
+	return string(j), nil
+}
+
+// Scan implements the sql.Scanner interface
+func (j *JSONText) Scan(value interface{}) error {
+	if value == nil {
+		*j = nil
+		return nil
+	}
+
+	switch v := value.(type) {
+	case string:
+		*j = JSONText(v)
+	case []byte:
+		*j = JSONText(v)
+	default:
+		return errors.New("cannot scan non-string value into JSONText")
+	}
+	return nil
+}
+
+// MarshalJSON implements the json.Marshaler interface
+func (j JSONText) MarshalJSON() ([]byte, error) {
+	if j == nil {
+		return []byte("null"), nil
+	}
+	return json.RawMessage(j).MarshalJSON()
+}
+
+// UnmarshalJSON implements the json.Unmarshaler interface
+func (j *JSONText) UnmarshalJSON(data []byte) error {
+	if j == nil {
+		*j = make(JSONText, 0)
+	}
+	*j = JSONText(data)
+	return nil
+}
+
 // Policy represents the main policy table
 type Policy struct {
-	ID          string          `gorm:"column:id;type:varchar(255);primaryKey;not null"`
-	Description string          `gorm:"column:description;type:text;not null"`
-	Effect      string          `gorm:"column:effect;type:text;not null;check:effect IN ('allow', 'deny')"`
-	Conditions  json.RawMessage `gorm:"column:conditions;type:text;not null"`
-	Meta        json.RawMessage `gorm:"column:meta;type:text"`
-	CreatedAt   time.Time       `gorm:"column:created_at;autoCreateTime"`
-	UpdatedAt   time.Time       `gorm:"column:updated_at;autoUpdateTime"`
-	DeletedAt   gorm.DeletedAt  `gorm:"column:deleted_at;index"`
+	ID          string         `gorm:"column:id;type:varchar(255);primaryKey;not null"`
+	Description string         `gorm:"column:description;type:text;not null"`
+	Effect      string         `gorm:"column:effect;type:text;not null;check:effect IN ('allow', 'deny')"`
+	Conditions  JSONText       `gorm:"column:conditions;type:text;not null"`
+	Meta        JSONText       `gorm:"column:meta;type:text"`
+	CreatedAt   time.Time      `gorm:"column:created_at;autoCreateTime"`
+	UpdatedAt   time.Time      `gorm:"column:updated_at;autoUpdateTime"`
+	DeletedAt   gorm.DeletedAt `gorm:"column:deleted_at;index"`
 
 	// Relationships
 	Subjects  []Subject  `gorm:"many2many:ladon_policy_subject_rel;foreignKey:ID;joinForeignKey:Policy;References:ID;joinReferences:Subject"`
