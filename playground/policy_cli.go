@@ -296,10 +296,41 @@ func (cli *PolicyCLI) readString() string {
 	return strings.TrimSpace(input)
 }
 
+// loadConfig loads environment variables from config.env file
+func loadConfig(filename string) error {
+	file, err := os.Open(filename)
+	if err != nil {
+		return fmt.Errorf("failed to open config file: %w", err)
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) == 2 {
+			key := strings.TrimSpace(parts[0])
+			value := strings.TrimSpace(parts[1])
+			os.Setenv(key, value)
+		}
+	}
+
+	return scanner.Err()
+}
+
 func main() {
+	// Try to load config.env first
+	if err := loadConfig("config.env"); err != nil {
+		log.Printf("Warning: Could not load config.env: %v", err)
+	}
+
 	dbString := os.Getenv("DB_STRING")
 	if dbString == "" {
-		log.Fatal("DB_STRING environment variable not set")
+		log.Fatal("DB_STRING environment variable not set. Please set it or create a config.env file.")
 	}
 
 	db, err := gorm.Open(postgres.Open(dbString), &gorm.Config{})

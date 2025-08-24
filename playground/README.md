@@ -1,25 +1,43 @@
 # 🎮 Ladon Policy Playground
 
-Welcome to the interactive playground for experimenting with the Ladon authorization framework! This playground provides various tools, examples, and scenarios to help you understand and test authorization policies.
+Welcome to the interactive playground for experimenting with the Ladon authorization framework! This playground provides various tools, examples, and scenarios to help you understand and test authorization policies using GORM-based database management.
 
 ## 🚀 Getting Started
 
 ### Prerequisites
 - Go 1.16+ installed
-- PostgreSQL database running
-- Database schema created (run `data/postgresql.sql`)
-- `DB_STRING` environment variable set
+- PostgreSQL database running (use `make up` to start with Docker)
+- `DB_STRING` environment variable set or `config.env` file created
 
 ### Quick Setup
+
+#### Option 1: Using Docker (Recommended)
+```bash
+# Start PostgreSQL database
+make up
+
+# Create config.env file
+echo "DB_STRING=postgres://ladon_user:ladon_password@localhost:5432/ladon_db?sslmode=disable" > config.env
+
+# Build and run playground tools
+cd playground
+make run-cli
+```
+
+#### Option 2: Manual Database Setup
 ```bash
 # Set your database connection
-export DB_STRING="host=localhost user=root password='Root\!23456' dbname=tea sslmode=disable"
+export DB_STRING="postgres://ladon_user:ladon_password@localhost:5432/ladon_db?sslmode=disable"
+
+# Or create config.env file
+echo "DB_STRING=postgres://ladon_user:ladon_password@localhost:5432/ladon_db?sslmode=disable" > config.env
 
 # Build the playground tools
-go build -o playground/policy_cli playground/policy_cli.go
+cd playground
+make build
 
 # Run the interactive CLI
-./playground/policy_cli
+make run-cli
 ```
 
 ## 🎯 Interactive Policy CLI
@@ -98,211 +116,119 @@ Description: Users can write to user endpoints
 Effect: allow
 Subjects: user,admin
 Resources: api:user:.*
-Actions: POST,PUT,DELETE
-
-Policy ID: api-admin-only
-Description: Admin only access to admin endpoints
-Effect: allow
-Subjects: admin
-Resources: api:admin:.*
-Actions: .*
-
-# Test various scenarios
-Subject: guest, Resource: api:public:users, Action: GET
-# Result: ✅ Access ALLOWED
-
-Subject: user, Resource: api:user:profile, Action: PUT
-# Result: ✅ Access ALLOWED
-
-Subject: user, Resource: api:admin:users, Action: DELETE
-# Result: ❌ Access DENIED
+Actions: POST,PUT
 ```
 
-## 🔐 Policy Patterns
+## 🛠️ Available Tools
 
-### 1. **Wildcard Patterns**
-- `.*` - Matches anything
-- `user:.*` - Matches anything starting with "user:"
-- `.*:read` - Matches anything ending with ":read"
+### 1. Interactive Policy CLI (`policy_cli`)
+- **Build**: `make cli`
+- **Run**: `make run-cli`
+- **Features**: Full interactive policy management
 
-### 2. **Specific Patterns**
-- `admin` - Matches exactly "admin"
-- `file:user:123` - Matches exactly this resource
-- `read` - Matches exactly this action
+### 2. Quick Test Scenarios (`quick_test`)
+- **Build**: `make quick-test`
+- **Run**: `make run-quick-test`
+- **Features**: Automated test scenarios and examples
 
-### 3. **Complex Patterns**
-- `file:user:<.*>` - Uses Ladon's template syntax
-- `api:.*:read` - Matches any API endpoint with read action
-- `user:.*:profile` - Matches user profile resources
+### 3. Playground Launcher (`playground.sh`)
+- **Run**: `./playground.sh`
+- **Features**: Menu-driven tool launcher with automatic building
 
-## 🎭 Real-World Examples
+## 🔧 Configuration
 
-### Example 1: Multi-Tenant SaaS Application
+### Environment Variables
+The playground tools automatically read from `config.env` if available:
+
 ```bash
-# Tenant isolation
-Policy ID: tenant-isolation
-Description: Users can only access their tenant's data
-Effect: allow
-Subjects: user
-Resources: tenant:<tenant_id>:.*
-Actions: read,write
-
-# Test with different tenants
-Subject: user@company1.com
-Resource: tenant:company1:users
-Action: read
-# Result: ✅ Access ALLOWED
-
-Subject: user@company1.com
-Resource: tenant:company2:users
-Action: read
-# Result: ❌ Access DENIED
+# config.env
+DB_STRING=postgres://ladon_user:ladon_password@localhost:5432/ladon_db?sslmode=disable
 ```
 
-### Example 2: Time-Based Access Control
+### Database Schema
+The database schema is automatically created when you run any tool. GORM handles:
+- Table creation
+- Indexes and constraints
+- Foreign key relationships
+- Automatic migrations
+
+## 📚 Usage Examples
+
+### Running Individual Tools
 ```bash
-# Business hours access
-Policy ID: business-hours
-Description: Access only during business hours
-Effect: allow
-Subjects: employee
-Resources: office:.*
-Actions: access
-Conditions: {"time": {"after": "09:00", "before": "17:00"}}
+# Build and run CLI
+cd playground
+make run-cli
 
-# Test during business hours
-Subject: employee
-Resource: office:main
-Action: access
-# Result: ✅ Access ALLOWED (if within time window)
+# Build and run quick test
+make run-quick-test
+
+# Build all tools
+make build
 ```
 
-### Example 3: Resource Hierarchy
+### Using the Playground Launcher
 ```bash
-# Department-based access
-Policy ID: dept-access
-Description: Department members can access their resources
-Effect: allow
-Subjects: dept:engineering
-Resources: dept:engineering:.*
-Actions: read,write
+# Start the interactive launcher
+cd playground
+./playground.sh
 
-Policy ID: cross-dept-read
-Description: Read access across departments
-Effect: allow
-Subjects: dept:.*
-Resources: dept:.*:public
-Actions: read
-
-# Test department access
-Subject: dept:engineering
-Resource: dept:engineering:code
-Action: write
-# Result: ✅ Access ALLOWED
-
-Subject: dept:marketing
-Resource: dept:engineering:code
-Action: read
-# Result: ❌ Access DENIED
+# Choose from the menu:
+# 1. Interactive Policy CLI
+# 2. Quick Test Scenarios
+# 3. Build All Tools
+# 4. Show Database Status
+# 5. Run Sample Policies
+# 6. Run Database Migrations
 ```
 
-## 🧪 Testing Strategies
+### Database Management
+```bash
+# From the root directory
+make up          # Start PostgreSQL
+make migrate     # Run migrations
+make status      # Check database status
+make down        # Stop PostgreSQL
+```
 
-### 1. **Positive Testing**
-- Test scenarios that should be allowed
-- Verify policies work as expected
-- Check edge cases within allowed ranges
+## 🧹 Cleanup
 
-### 2. **Negative Testing**
-- Test scenarios that should be denied
-- Verify security boundaries
-- Check unexpected access patterns
+### Remove Build Artifacts
+```bash
+cd playground
+make clean
+```
 
-### 3. **Boundary Testing**
-- Test at the edges of policy definitions
-- Verify regex patterns work correctly
-- Check template syntax boundaries
+### Reset Database
+```bash
+# From root directory
+make reset-db
+```
 
-### 4. **Performance Testing**
-- Test with large numbers of policies
-- Verify query performance
-- Check memory usage patterns
+## 🔍 Troubleshooting
 
-## 🔍 Debugging Tips
+### Common Issues
 
-### 1. **Policy Matching**
-- Use the "Show Policy Details" feature to examine policies
-- Check regex patterns for syntax errors
-- Verify template delimiters
+1. **Database Connection Failed**
+   - Ensure PostgreSQL is running: `make up`
+   - Check `config.env` or `DB_STRING` environment variable
+   - Verify database credentials
 
-### 2. **Database Issues**
-- Check database connection
-- Verify schema is created correctly
-- Check table permissions
+2. **Schema Creation Failed**
+   - Run migrations manually: `make migrate`
+   - Check database permissions
+   - Ensure database exists
 
-### 3. **Policy Logic**
-- Understand Ladon's evaluation order
-- Check for conflicting policies
-- Verify effect (allow/deny) settings
+3. **Build Failures**
+   - Ensure Go 1.16+ is installed
+   - Check import paths in Go files
+   - Run `go mod tidy` if needed
 
-## 📚 Learning Path
+### Getting Help
+- Check the main project README for database setup
+- Use `make help` for available commands
+- Run `./playground.sh` for interactive help
 
-### Beginner Level
-1. **Start Simple**: Create basic allow/deny policies
-2. **Test Basic Scenarios**: Simple subject/resource/action combinations
-3. **Understand Patterns**: Learn regex and template syntax
+## 🎉 Happy Policy Testing!
 
-### Intermediate Level
-1. **Complex Policies**: Multi-subject, multi-resource policies
-2. **Policy Relationships**: Understand how policies interact
-3. **Real-world Scenarios**: Model actual application requirements
-
-### Advanced Level
-1. **Conditional Policies**: Time, location, and context-based access
-2. **Performance Optimization**: Efficient policy design
-3. **Custom Extensions**: Extend Ladon for specific needs
-
-## 🚨 Common Pitfalls
-
-### 1. **Regex Complexity**
-- Overly complex patterns can be hard to debug
-- Test regex patterns separately
-- Use simple patterns when possible
-
-### 2. **Policy Conflicts**
-- Multiple policies can create unexpected results
-- Understand Ladon's evaluation order
-- Test policy combinations thoroughly
-
-### 3. **Resource Naming**
-- Inconsistent naming can cause access issues
-- Use clear, hierarchical naming conventions
-- Document resource naming patterns
-
-## 🎉 Advanced Features
-
-### 1. **Custom Conditions**
-- Extend policies with custom logic
-- Implement time-based access
-- Add location-based restrictions
-
-### 2. **Policy Inheritance**
-- Create base policies and extend them
-- Implement role hierarchies
-- Build policy templates
-
-### 3. **Audit and Logging**
-- Track policy decisions
-- Monitor access patterns
-- Generate compliance reports
-
-## 🔗 Useful Resources
-
-- [Ladon Framework Documentation](https://github.com/ory/ladon)
-- [GORM Documentation](https://gorm.io/docs/)
-- [PostgreSQL Documentation](https://www.postgresql.org/docs/)
-- [Regular Expressions Guide](https://regex101.com/)
-
----
-
-**🎮 Happy Policy Testing!** Use this playground to experiment with different authorization scenarios and build confidence in your Ladon implementation.
+The playground is designed to make authorization policy testing fun and educational. Experiment with different scenarios, test edge cases, and build complex policies to understand how Ladon works!

@@ -13,29 +13,29 @@ build: cli quick-test
 # Build CLI tool
 cli:
 	@echo "🔨 Building policy CLI..."
-	@cd cli && go build -o policy_cli .
-	@echo "✅ CLI tool built: cli/policy_cli"
+	@go build -o policy_cli policy_cli.go
+	@echo "✅ CLI tool built: policy_cli"
 
 # Build quick test tool
 quick-test:
 	@echo "🔨 Building quick test tool..."
-	@cd quick_test && go build -o quick_test .
-	@echo "✅ Quick test tool built: quick_test/quick_test"
+	@go build -o quick_test quick_test_main.go
+	@echo "✅ Quick test tool built: quick_test"
 
 # Run CLI tool
 run-cli: cli
 	@echo "🚀 Running Interactive Policy CLI..."
-	@cd cli && ./policy_cli
+	@./policy_cli
 
 # Run quick test tool
 run-quick-test: quick-test
 	@echo "🧪 Running Quick Test Scenarios..."
-	@cd quick_test && ./quick_test
+	@./quick_test
 
 # Clean build artifacts
 clean:
 	@echo "🧹 Cleaning build artifacts..."
-	@rm -f cli/policy_cli quick_test/quick_test
+	@rm -f policy_cli quick_test
 	@echo "✅ Cleaned!"
 
 # Show help
@@ -60,6 +60,10 @@ help:
 	@echo "  make clean             # Clean build files"
 	@echo ""
 	@echo "Prerequisites:"
-	@echo "  - Set DB_STRING environment variable"
-	@echo "  - Database schema must be created"
+	@echo "  - Set DB_STRING environment variable or create config.env"
+	@echo "  - Database schema will be created automatically via GORM"
 	@echo "  - Go 1.16+ installed"
+	@echo ""
+	@echo "Configuration:"
+	@echo "  - Create config.env with DB_STRING for automatic configuration"
+	@echo "  - Or set DB_STRING environment variable manually"
