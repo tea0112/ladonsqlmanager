@@ -1,183 +1,31 @@
+// Package models provides data models for the Ladon SQL Manager.
+// This package contains GORM models for managing authorization policies,
+// subjects, actions, and resources in a SQL database.
+//
+// The main entities are:
+//   - Policy: Represents authorization policies with allow/deny effects
+//   - Subject: Represents entities that can perform actions (users, roles, etc.)
+//   - Action: Represents operations that can be performed
+//   - Resource: Represents objects that actions can be performed on
+//
+// File Organization:
+//   - constants.go: Contains all constants (table names, field sizes, effects)
+//   - interfaces.go: Contains interfaces for validation and common operations
+//   - base_types.go: Contains JSONText and BaseEntity types
+//   - policy.go: Contains the Policy model and its methods
+//   - entities.go: Contains Subject, Action, and Resource models
+//   - relations.go: Contains relationship models (PolicySubjectRel, etc.)
+//
+// Example usage:
+//
+//	policy := &Policy{
+//		ID:          "policy-1",
+//		Description: "Allow users to read documents",
+//		Effect:      EffectAllow,
+//		Conditions:  JSONText(`{"user_role": "reader"}`),
+//	}
+//
+//	if err := policy.Validate(); err != nil {
+//		log.Fatal(err)
+//	}
 package models
-
-import (
-	"database/sql/driver"
-	"encoding/json"
-	"errors"
-	"time"
-
-	"gorm.io/gorm"
-)
-
-// JSONText is a custom type that can handle JSON stored as text in the database
-type JSONText json.RawMessage
-
-// Value implements the driver.Valuer interface
-func (j JSONText) Value() (driver.Value, error) {
-	if j == nil {
-		return nil, nil
-	}
-	return string(j), nil
-}
-
-// Scan implements the sql.Scanner interface
-func (j *JSONText) Scan(value interface{}) error {
-	if value == nil {
-		*j = nil
-		return nil
-	}
-
-	switch v := value.(type) {
-	case string:
-		*j = JSONText(v)
-	case []byte:
-		*j = JSONText(v)
-	default:
-		return errors.New("cannot scan non-string value into JSONText")
-	}
-	return nil
-}
-
-// MarshalJSON implements the json.Marshaler interface
-func (j JSONText) MarshalJSON() ([]byte, error) {
-	if j == nil {
-		return []byte("null"), nil
-	}
-	return json.RawMessage(j).MarshalJSON()
-}
-
-// UnmarshalJSON implements the json.Unmarshaler interface
-func (j *JSONText) UnmarshalJSON(data []byte) error {
-	if j == nil {
-		*j = make(JSONText, 0)
-	}
-	*j = JSONText(data)
-	return nil
-}
-
-// Policy represents the main policy table
-type Policy struct {
-	ID          string         `gorm:"column:id;type:varchar(255);primaryKey;not null"`
-	Description string         `gorm:"column:description;type:text;not null"`
-	Effect      string         `gorm:"column:effect;type:text;not null;check:effect IN ('allow', 'deny')"`
-	Conditions  JSONText       `gorm:"column:conditions;type:text;not null"`
-	Meta        JSONText       `gorm:"column:meta;type:text"`
-	CreatedAt   time.Time      `gorm:"column:created_at;autoCreateTime"`
-	UpdatedAt   time.Time      `gorm:"column:updated_at;autoUpdateTime"`
-	DeletedAt   gorm.DeletedAt `gorm:"column:deleted_at;index"`
-
-	// Relationships
-	Subjects  []Subject  `gorm:"many2many:ladon_policy_subject_rel;foreignKey:ID;joinForeignKey:Policy;References:ID;joinReferences:Subject"`
-	Actions   []Action   `gorm:"many2many:ladon_policy_action_rel;foreignKey:ID;joinForeignKey:Policy;References:ID;joinReferences:Action"`
-	Resources []Resource `gorm:"many2many:ladon_policy_resource_rel;foreignKey:ID;joinForeignKey:Policy;References:ID;joinReferences:Resource"`
-}
-
-// TableName specifies the table name for Policy
-func (Policy) TableName() string {
-	return "ladon_policy"
-}
-
-// Subject represents the subject definitions table
-type Subject struct {
-	ID        string         `gorm:"column:id;type:varchar(64);primaryKey;not null"`
-	HasRegex  bool           `gorm:"column:has_regex;type:bool;not null"`
-	Compiled  string         `gorm:"column:compiled;type:varchar(511);uniqueIndex;not null"`
-	Template  string         `gorm:"column:template;type:varchar(511);uniqueIndex;not null"`
-	CreatedAt time.Time      `gorm:"column:created_at;autoCreateTime"`
-	UpdatedAt time.Time      `gorm:"column:updated_at;autoUpdateTime"`
-	DeletedAt gorm.DeletedAt `gorm:"column:deleted_at;index"`
-
-	// Relationships
-	Policies []Policy `gorm:"many2many:ladon_policy_subject_rel;foreignKey:ID;joinForeignKey:Subject;References:ID;joinReferences:Policy"`
-}
-
-// TableName specifies the table name for Subject
-func (Subject) TableName() string {
-	return "ladon_subject"
-}
-
-// Action represents the action definitions table
-type Action struct {
-	ID        string         `gorm:"column:id;type:varchar(64);primaryKey;not null"`
-	HasRegex  bool           `gorm:"column:has_regex;type:bool;not null"`
-	Compiled  string         `gorm:"column:compiled;type:varchar(511);uniqueIndex;not null"`
-	Template  string         `gorm:"column:template;type:varchar(511);uniqueIndex;not null"`
-	CreatedAt time.Time      `gorm:"column:created_at;autoCreateTime"`
-	UpdatedAt time.Time      `gorm:"column:updated_at;autoUpdateTime"`
-	DeletedAt gorm.DeletedAt `gorm:"column:deleted_at;index"`
-
-	// Relationships
-	Policies []Policy `gorm:"many2many:ladon_policy_action_rel;foreignKey:ID;joinForeignKey:Action;References:ID;joinReferences:Policy"`
-}
-
-// TableName specifies the table name for Action
-func (Action) TableName() string {
-	return "ladon_action"
-}
-
-// Resource represents the resource definitions table
-type Resource struct {
-	ID        string         `gorm:"column:id;type:varchar(64);primaryKey;not null"`
-	HasRegex  bool           `gorm:"column:has_regex;type:bool;not null"`
-	Compiled  string         `gorm:"column:compiled;type:varchar(511);uniqueIndex;not null"`
-	Template  string         `gorm:"column:template;type:varchar(511);uniqueIndex;not null"`
-	CreatedAt time.Time      `gorm:"column:created_at;autoCreateTime"`
-	UpdatedAt time.Time      `gorm:"column:updated_at;autoUpdateTime"`
-	DeletedAt gorm.DeletedAt `gorm:"column:deleted_at;index"`
-
-	// Relationships
-	Policies []Policy `gorm:"many2many:ladon_policy_resource_rel;foreignKey:ID;joinForeignKey:Resource;References:ID;joinReferences:Policy"`
-}
-
-// TableName specifies the table name for Resource
-func (Resource) TableName() string {
-	return "ladon_resource"
-}
-
-// PolicySubjectRel represents the policy-subject relationship table
-type PolicySubjectRel struct {
-	Policy    string    `gorm:"column:policy;type:varchar(255);primaryKey;not null"`
-	Subject   string    `gorm:"column:subject;type:varchar(64);primaryKey;not null"`
-	CreatedAt time.Time `gorm:"column:created_at;autoCreateTime"`
-
-	// Foreign key relationships
-	PolicyRef  Policy  `gorm:"foreignKey:Policy;references:ID;constraint:OnDelete:CASCADE"`
-	SubjectRef Subject `gorm:"foreignKey:Subject;references:ID;constraint:OnDelete:CASCADE"`
-}
-
-// TableName specifies the table name for PolicySubjectRel
-func (PolicySubjectRel) TableName() string {
-	return "ladon_policy_subject_rel"
-}
-
-// PolicyActionRel represents the policy-action relationship table
-type PolicyActionRel struct {
-	Policy    string    `gorm:"column:policy;type:varchar(255);primaryKey;not null"`
-	Action    string    `gorm:"column:action;type:varchar(64);primaryKey;not null"`
-	CreatedAt time.Time `gorm:"column:created_at;autoCreateTime"`
-
-	// Foreign key relationships
-	PolicyRef Policy `gorm:"foreignKey:Policy;references:ID;constraint:OnDelete:CASCADE"`
-	ActionRef Action `gorm:"foreignKey:Action;references:ID;constraint:OnDelete:CASCADE"`
-}
-
-// TableName specifies the table name for PolicyActionRel
-func (PolicyActionRel) TableName() string {
-	return "ladon_policy_action_rel"
-}
-
-// PolicyResourceRel represents the policy-resource relationship table
-type PolicyResourceRel struct {
-	Policy    string    `gorm:"column:policy;type:varchar(255);primaryKey;not null"`
-	Resource  string    `gorm:"column:resource;type:varchar(64);primaryKey;not null"`
-	CreatedAt time.Time `gorm:"column:created_at;autoCreateTime"`
-
-	// Foreign key relationships
-	PolicyRef   Policy   `gorm:"foreignKey:Policy;references:ID;constraint:OnDelete:CASCADE"`
-	ResourceRef Resource `gorm:"foreignKey:Resource;references:ID;constraint:OnDelete:CASCADE"`
-}
-
-// TableName specifies the table name for PolicyResourceRel
-func (PolicyResourceRel) TableName() string {
-	return "ladon_policy_resource_rel"
-}

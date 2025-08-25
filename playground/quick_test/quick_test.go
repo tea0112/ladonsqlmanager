@@ -220,10 +220,10 @@ func main() {
 		allowed := err == nil
 
 		if allowed == tc.expected {
-			fmt.Printf("✅ %s -> %s:%s = %v (expected: %v)\n", 
+			fmt.Printf("✅ %s -> %s:%s = %v (expected: %v)\n",
 				tc.subject, tc.resource, tc.action, allowed, tc.expected)
 		} else {
-			fmt.Printf("❌ %s -> %s:%s = %v (expected: %v)\n", 
+			fmt.Printf("❌ %s -> %s:%s = %v (expected: %v)\n",
 				tc.subject, tc.resource, tc.action, allowed, tc.expected)
 		}
 	}
