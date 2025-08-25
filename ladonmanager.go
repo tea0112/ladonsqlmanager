@@ -214,8 +214,8 @@ func (s *SQLManager) FindRequestCandidates(ctx context.Context, r *ladon.Request
 		Preload("Actions").
 		Preload("Resources").
 		Distinct().
-		Joins("JOIN ladon_policy_subject_rel psr ON psr.policy = ladon_policy.id").
-		Joins("JOIN ladon_subject s ON s.id = psr.subject")
+		Joins(fmt.Sprintf("JOIN %s psr ON psr.policy = %s.id", models.TableNamePolicySubjectRel, models.TableNamePolicy)).
+		Joins(fmt.Sprintf("JOIN %s s ON s.id = psr.subject", models.TableNameSubject))
 
 	// Database-specific regex handling
 	switch s.driverName {
@@ -304,8 +304,8 @@ func (s *SQLManager) FindPoliciesForSubject(ctx context.Context, subject string)
 		Preload("Actions").
 		Preload("Resources").
 		Distinct().
-		Joins("JOIN ladon_policy_subject_rel psr ON psr.policy = ladon_policy.id").
-		Joins("JOIN ladon_subject s ON s.id = psr.subject")
+		Joins(fmt.Sprintf("JOIN %s psr ON psr.policy = %s.id", models.TableNamePolicySubjectRel, models.TableNamePolicy)).
+		Joins(fmt.Sprintf("JOIN %s s ON s.id = psr.subject", models.TableNameSubject))
 
 	// Database-specific regex handling
 	switch s.driverName {
@@ -340,8 +340,8 @@ func (s *SQLManager) FindPoliciesForResource(ctx context.Context, resource strin
 		Preload("Actions").
 		Preload("Resources").
 		Distinct().
-		Joins("JOIN ladon_policy_resource_rel prr ON prr.policy = ladon_policy.id").
-		Joins("JOIN ladon_resource r ON r.id = prr.resource")
+		Joins(fmt.Sprintf("JOIN %s prr ON prr.policy = %s.id", models.TableNamePolicyResourceRel, models.TableNamePolicy)).
+		Joins(fmt.Sprintf("JOIN %s r ON r.id = prr.resource", models.TableNameResource))
 
 	// Database-specific regex handling
 	switch s.driverName {
