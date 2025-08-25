@@ -177,7 +177,6 @@ func (s *SQLManager) processPolicyRelations(policy ladon.Policy, tx *gorm.DB) er
 
 func (s *SQLManager) processPolicyItems(items []string, itemType string, policyID string, startDelim, endDelim byte, tx *gorm.DB) error {
 	// Batch process items for better performance
-	itemEntities := make([]interface{}, 0, len(items))
 	relationships := make([]interface{}, 0, len(items))
 
 	for _, template := range items {
