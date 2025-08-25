@@ -2,7 +2,6 @@ package ladonsqlmanager
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -12,7 +11,6 @@ import (
 	"github.com/ladonsqlmanager/migrations"
 	"github.com/ladonsqlmanager/models"
 	"github.com/ory/ladon"
-	"github.com/ory/ladon/compiler"
 	"github.com/pkg/errors"
 	"gorm.io/gorm"
 )
@@ -32,6 +30,8 @@ var (
 	ErrEmptyPolicyID = errors.New("policy ID cannot be empty")
 	// ErrPolicyIDTooLong returned when policy ID exceeds maximum length
 	ErrPolicyIDTooLong = errors.New("policy ID exceeds maximum length")
+	// ErrInvalidRelationType returned when relation type is invalid
+	ErrInvalidRelationType = errors.New("invalid relation type")
 )
 
 // Config holds configuration options for SQLManager
@@ -54,9 +54,13 @@ func DefaultConfig() Config {
 
 // SQLManager implements the ladon/Manager without requiring sqlx or migrations packages
 type SQLManager struct {
-	db         *gorm.DB
-	driverName string
-	config     Config
+	db               *gorm.DB
+	driverName       string
+	config           Config
+	factoryRegistry  *EntityFactoryRegistry
+	builderDirector  *EntityBuilderDirector
+	strategyRegistry *RelationStrategyRegistry
+	typeDetector     *RelationTypeDetector
 }
 
 // New creates a new, uninitialized SQLManager with default configuration
@@ -66,10 +70,15 @@ func New(db *gorm.DB, driverName string) *SQLManager {
 
 // NewWithConfig creates a new SQLManager with custom configuration
 func NewWithConfig(db *gorm.DB, driverName string, config Config) *SQLManager {
+	strategyRegistry := NewRelationStrategyRegistry()
 	return &SQLManager{
-		db:         db,
-		driverName: strings.ToLower(driverName),
-		config:     config,
+		db:               db,
+		driverName:       strings.ToLower(driverName),
+		config:           config,
+		factoryRegistry:  NewEntityFactoryRegistry(),
+		builderDirector:  NewEntityBuilderDirector(),
+		strategyRegistry: strategyRegistry,
+		typeDetector:     NewRelationTypeDetector(strategyRegistry),
 	}
 }
 
@@ -176,61 +185,29 @@ func (s *SQLManager) processPolicyRelations(policy ladon.Policy, tx *gorm.DB) er
 }
 
 func (s *SQLManager) processPolicyItems(items []string, itemType string, policyID string, startDelim, endDelim byte, tx *gorm.DB) error {
+	// Get the appropriate factory for this entity type
+	factory, exists := s.factoryRegistry.GetFactory(itemType)
+	if !exists {
+		return errors.Errorf("unsupported entity type: %s", itemType)
+	}
+
 	// Batch process items for better performance
 	relationships := make([]interface{}, 0, len(items))
 
 	for _, template := range items {
-		// Sanitize the template
-		template = sanitizeTemplate(template)
-		if template == "" {
+		// Use the builder to create the base entity
+		baseEntity, err := s.builderDirector.BuildStandardEntity(template, startDelim, endDelim)
+		if err != nil {
+			// Skip invalid templates but continue processing others
 			continue
 		}
 
-		h := sha256.New()
-		_, _ = h.Write([]byte(template))
-		id := fmt.Sprintf("%x", h.Sum(nil))
-
-		compiled, err := compiler.CompileRegex(template, startDelim, endDelim)
-		if err != nil {
-			return errors.WithStack(err)
-		}
-
-		hasRegex := strings.Index(template, string(startDelim)) >= 0
-
-		// Create the base entity
-		baseEntity := models.BaseEntity{
-			ID:       id,
-			Template: template,
-			Compiled: compiled.String(),
-			HasRegex: hasRegex,
-		}
-
-		// Create or update the item
-		var item interface{}
-		var relation interface{}
-		switch itemType {
-		case "subject":
-			item = &models.Subject{BaseEntity: baseEntity}
-			relation = &models.PolicySubjectRel{
-				Policy:  policyID,
-				Subject: id,
-			}
-		case "action":
-			item = &models.Action{BaseEntity: baseEntity}
-			relation = &models.PolicyActionRel{
-				Policy: policyID,
-				Action: id,
-			}
-		case "resource":
-			item = &models.Resource{BaseEntity: baseEntity}
-			relation = &models.PolicyResourceRel{
-				Policy:   policyID,
-				Resource: id,
-			}
-		}
+		// Use the factory to create the specific entity type and relationship
+		item := factory.CreateEntity(baseEntity)
+		relation := factory.CreateRelation(policyID, baseEntity.ID)
 
 		// Use GORM's FirstOrCreate to avoid duplicates
-		if err := tx.Where("id = ?", id).FirstOrCreate(item).Error; err != nil {
+		if err := tx.Where("id = ?", baseEntity.ID).FirstOrCreate(item).Error; err != nil {
 			return errors.WithStack(err)
 		}
 
@@ -248,41 +225,29 @@ func (s *SQLManager) processPolicyItems(items []string, itemType string, policyI
 }
 
 func (s *SQLManager) createPolicyRelation(policyID, itemID, itemType string, tx *gorm.DB) error {
-	switch itemType {
-	case "subject":
-		rel := &models.PolicySubjectRel{
-			Policy:  policyID,
-			Subject: itemID,
-		}
-		return tx.Where("policy = ? AND subject = ?", policyID, itemID).FirstOrCreate(rel).Error
-	case "action":
-		rel := &models.PolicyActionRel{
-			Policy: policyID,
-			Action: itemID,
-		}
-		return tx.Where("policy = ? AND action = ?", policyID, itemID).FirstOrCreate(rel).Error
-	case "resource":
-		rel := &models.PolicyResourceRel{
-			Policy:   policyID,
-			Resource: itemID,
-		}
-		return tx.Where("policy = ? AND resource = ?", policyID, itemID).FirstOrCreate(rel).Error
+	// Get the appropriate factory for this entity type
+	factory, exists := s.factoryRegistry.GetFactory(itemType)
+	if !exists {
+		return errors.Errorf("unsupported entity type: %s", itemType)
 	}
-	return nil
+
+	// Use the factory to create the relationship
+	relation := factory.CreateRelation(policyID, itemID)
+
+	// Use the optimized method to create the relationship
+	return s.createPolicyRelationOptimized(relation, tx)
 }
 
-// createPolicyRelationOptimized creates policy relations with better error handling
+// createPolicyRelationOptimized creates policy relations using strategy pattern
 func (s *SQLManager) createPolicyRelationOptimized(relation interface{}, tx *gorm.DB) error {
-	switch rel := relation.(type) {
-	case *models.PolicySubjectRel:
-		return tx.Where("policy = ? AND subject = ?", rel.Policy, rel.Subject).FirstOrCreate(rel).Error
-	case *models.PolicyActionRel:
-		return tx.Where("policy = ? AND action = ?", rel.Policy, rel.Action).FirstOrCreate(rel).Error
-	case *models.PolicyResourceRel:
-		return tx.Where("policy = ? AND resource = ?", rel.Policy, rel.Resource).FirstOrCreate(rel).Error
-	default:
-		return errors.New("unsupported relation type")
+	// Use the type detector to get the appropriate strategy
+	strategy, err := s.typeDetector.DetectAndGetStrategy(relation)
+	if err != nil {
+		return err
 	}
+
+	// Use the strategy to persist the relation
+	return strategy.PersistRelation(relation, tx)
 }
 
 // buildRegexQuery builds a database-specific regex query for matching entities
@@ -516,19 +481,4 @@ func (s *SQLManager) convertPoliciesToLadon(policies []models.Policy) ladon.Poli
 		result[i] = s.convertPolicyToLadon(policy)
 	}
 	return result
-}
-
-// Helper function to get unique strings (kept for potential future use)
-func uniq(input []string) []string {
-	u := make([]string, 0, len(input))
-	m := make(map[string]bool)
-
-	for _, val := range input {
-		if _, ok := m[val]; !ok {
-			m[val] = true
-			u = append(u, val)
-		}
-	}
-
-	return u
 }
